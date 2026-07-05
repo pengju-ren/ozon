@@ -1,0 +1,18 @@
+# === Secrets ===
+.env
+
+# === macOS ===
+.DS_Store
+
+# === Python ===
+__pycache__/
+*.pyc
+
+# === Chrome Profiles (large, runtime data) ===
+output/chrome_cdp_profile/
+output/chrome_night_profile/
+output/chrome_profile/
+
+# === Logs ===
+*.log
+*.old
