@@ -16,3 +16,14 @@ output/chrome_profile/
 # === Logs ===
 *.log
 *.old
+
+# === Runtime Output ===
+output/images/
+output/profit_checkpoint.json
+output/profit_result.xlsx
+output/test_output*.json
+output/1688_auto_result.xlsx
+output/1688_match_result.xlsx
+output/auto_checkpoint.json
+output/pw_checkpoint.json
+output/search_results.json
