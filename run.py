@@ -173,8 +173,12 @@ async def run_pipeline(
         from src.searcher_1688_official import Alibaba1688Searcher
         searcher = Alibaba1688Searcher()
         logger.info("🛤️  途径: 1688 官方 API")
+    elif backend == "search1688api":
+        from src.searcher_search1688api import Search1688ApiSearcher
+        searcher = Search1688ApiSearcher()
+        logger.info("🛤️  途径: search1688api H5 API")
     else:
-        logger.error(f"未知途径: {backend}。可选: onebound / playwright / official")
+        logger.error(f"未知途径: {backend}。可选: onebound / playwright / official / search1688api")
         return []
 
     logger.info(f"🔍 模式: {mode}")
@@ -361,11 +365,12 @@ async def main():
   python run.py --backend onebound --limit 3      # OneBound API 测试3条
   python run.py --backend playwright --limit 3    # Playwright 测试3条
   python run.py --backend official --limit 3      # 1688官方API（需营业执照）
+  python run.py --backend search1688api --limit 3 # H5 API 测试3条
   python run.py --mode keyword --limit 10         # 仅关键词搜索
   python run.py --translate-only                  # 检查翻译质量
         """,
     )
-    parser.add_argument("--backend", choices=["onebound", "playwright", "official"],
+    parser.add_argument("--backend", choices=["onebound", "playwright", "official", "search1688api"],
                         default="onebound", help="搜索途径 (default: onebound)")
     parser.add_argument("--mode", choices=["image", "keyword", "both"],
                         default="both", help="搜索模式 (default: both)")
