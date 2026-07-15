@@ -17,8 +17,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from search1688api import Sync1688Session
-from src.translate_live import TitleTranslator
-from src.filter_1688 import ResultFilter
+from src.llm_filter import translate_and_filter, translate_title as llm_translate
 
 # ------------------------------------------------------------------
 # 配置
@@ -54,6 +53,8 @@ class MatchResult:
     detail_url: str = ""
     sales: int = 0
     relevance: int = 0           # 过滤分数
+    llm_score: int = 0           # LLM 相关性评分 (0-10)
+    llm_reason: str = ""         # LLM 判断理由
 
     # 利润
     revenue_cny: float = 0.0
@@ -78,26 +79,11 @@ class ProductResult:
     margin_pct_ozon: str = ""
     image_url: str = ""
     matches: List[MatchResult] = field(default_factory=list)
+    note: str = ""               # 备注（如"仅配件，无整机"）
     error: str = ""
 
 
 # ------------------------------------------------------------------
-# 翻译
-# ------------------------------------------------------------------
-translator = TitleTranslator()
-
-
-def translate_title(ru_title: str) -> str:
-    """翻译俄语标题 → 中文"""
-    cn = translator.translate(ru_title)
-    if cn:
-        return cn
-    # CSV 字典没命中：提取非西里尔词 + 品牌词作为兜底
-    from src.translate_live import TitleTranslator as TT
-    kws = TT.extract_keywords(ru_title)
-    return " ".join(kws) if kws else ru_title[:60]
-
-
 # ------------------------------------------------------------------
 # 利润计算
 # ------------------------------------------------------------------
@@ -146,6 +132,14 @@ def read_csv(csv_path: Path) -> List[Dict]:
 async def run_pipeline(csv_path: Path, limit: int = 0,
                         start: int = 0, min_relevance: int = 1):
     rows = read_csv(csv_path)
+
+    # 按毛利率降序重排（CSV 可能不是正确排序）
+    def _margin_val(r):
+        m = str(r.get("毛利率", "0")).replace("%", "").strip()
+        try: return float(m)
+        except: return 0.0
+    rows.sort(key=_margin_val, reverse=True)
+
     if limit > 0:
         rows = rows[start:start + limit]
 
@@ -173,19 +167,14 @@ async def run_pipeline(csv_path: Path, limit: int = 0,
                 margin_pct_ozon=margin_ozon, image_url=image_url,
             )
 
-            # 1. 翻译
-            title_cn = translate_title(title_ru)
-            pr.title_cn = title_cn
-            logger.info(f"  翻译: {title_cn[:60]}")
-
-            # 2. 下载图片 + 缩放
+            # 1. 下载图片 + 缩放
             local_img = _get_local_image(image_url, title_ru, row_num)
             if not local_img:
                 pr.error = "无图片"
                 results.append(pr)
                 continue
 
-            # 3. H5 图搜
+            # 2. H5 图搜
             try:
                 raw_items = searcher.search_by_image(str(local_img))
                 logger.info(f"  图搜: {len(raw_items)} 条")
@@ -200,10 +189,13 @@ async def run_pipeline(csv_path: Path, limit: int = 0,
                 results.append(pr)
                 continue
 
-            # 4. 过滤
-            flt = ResultFilter.from_ozon_row(title_cn, brand, category)
-            passed, rejected = flt.filter(raw_items, min_score=min_relevance)
-            logger.info(f"  过滤: {len(passed)} 通过 / {len(rejected)} 淘汰")
+            # 3. LLM 翻译 + 过滤（一条龙）
+            title_cn, passed = translate_and_filter(
+                row, raw_items, top_n=20
+            )
+            pr.title_cn = title_cn
+            logger.info(f"  翻译: {title_cn[:60]}")
+            logger.info(f"  LLM过滤: {len(passed)} 通过 / {len(raw_items) - len(passed)} 淘汰")
 
             # 5. 计算利润
             for item in passed:
@@ -228,9 +220,19 @@ async def run_pipeline(csv_path: Path, limit: int = 0,
                     detail_url=f"https://detail.1688.com/offer/{offer_id}.html" if offer_id else "",
                     sales=int(d.get("saleQuantity", d.get("bookedCount", 0))),
                     relevance=item.get("_relevance_score", 0),
+                    llm_score=item.get("_llm_score", 0),
+                    llm_reason=item.get("_llm_reason", ""),
                     **profit,
                 )
                 pr.matches.append(m)
+
+            # 判断是否仅有配件
+            if pr.matches:
+                max_llm = max(m.llm_score for m in pr.matches)
+                if max_llm < 7:
+                    pr.note = "仅配件，无整机同款"
+                elif max_llm < 9:
+                    pr.note = "配件为主"
 
             if passed:
                 # 按净利润降序排
@@ -330,9 +332,9 @@ def _save_excel(results: List[ProductResult], prefix: str):
     headers = [
         "序号", "Ozon标题", "翻译标题", "品牌", "类目", "Ozon售价₽",
         "1688商品", "1688价格", "成本价¥", "店铺", "店铺链接",
-        "1688链接", "1688销量", "相关度",
+        "1688链接", "1688销量", "LLM分", "LLM理由",
         "收入¥", "1688成本", "国内运费", "国际运费", "佣金",
-        "总成本¥", "净利润¥", "毛利率%", "Ozon毛利率%",
+        "总成本¥", "净利润¥", "毛利率%", "Ozon毛利率%", "备注",
     ]
     for c, h in enumerate(headers, 1):
         cell = ws.cell(row=1, column=c, value=h)
@@ -353,7 +355,8 @@ def _save_excel(results: List[ProductResult], prefix: str):
                 m.shop_url if m else "-",
                 m.detail_url if m else "-",
                 m.sales if m else 0,
-                m.relevance if m else 0,
+                m.llm_score if m else 0,
+                m.llm_reason[:40] if m else "",
                 m.revenue_cny if m else 0,
                 m.cost_1688 if m else 0,
                 m.cost_domestic if m else 0,
@@ -363,6 +366,7 @@ def _save_excel(results: List[ProductResult], prefix: str):
                 m.net_profit if m else 0,
                 m.margin_pct if m else 0,
                 pr.margin_pct_ozon,
+                pr.note if m else (pr.error or pr.note or ""),
             ]
             for c, v in enumerate(vals, 1):
                 ws.cell(row=row, column=c, value=v)
@@ -408,8 +412,8 @@ if __name__ == "__main__":
     parser.add_argument("--limit", type=int, default=3, help="处理前 N 个商品（0=全部）")
     parser.add_argument("--start", type=int, default=0, help="起始位置")
     parser.add_argument("--csv", help="CSV 文件路径")
-    parser.add_argument("--min-relevance", type=int, default=1,
-                        help="过滤最低相关分数（默认 1）")
+    parser.add_argument("--min-relevance", type=int, default=2,
+                        help="过滤最低相关分数（默认 2 = 至少命中一个类目词或品牌）")
     args = parser.parse_args()
 
     csv_path = Path(args.csv) if args.csv else sorted(

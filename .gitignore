@@ -34,3 +34,5 @@ output/*.xlsx
 output/*.json
 *.~*
 output/images/
+sdk/
+output/*.png
