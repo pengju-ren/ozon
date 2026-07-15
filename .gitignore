@@ -27,3 +27,10 @@ output/1688_match_result.xlsx
 output/auto_checkpoint.json
 output/pw_checkpoint.json
 output/search_results.json
+
+# === Pipeline Output ===
+output/downloads/
+output/*.xlsx
+output/*.json
+*.~*
+output/images/
